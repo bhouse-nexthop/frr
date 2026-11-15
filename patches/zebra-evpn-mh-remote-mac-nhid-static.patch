@@ -1,0 +1,43 @@
+From: Brad House <bhouse@nexthop.ai>
+Subject: zebra: install remote EVPN-MH MACs as static fdb entries
+
+Kernels with the fix for CVE-2026-98023 ("vxlan: reject dynamic fdb
+entries that reference a nexthop id") refuse to add or update a dynamic
+fdb entry that uses an nhid:
+
+  zebra: Extended Error: A nexthop fdb cannot be dynamic
+  zebra: netlink-dp (NS 0) error: Invalid argument, type=RTM_NEWNEIGH(28)
+
+zebra installs remote MACs behind an Ethernet Segment exactly that way
+(NUD_REACHABLE + NTF_EXT_LEARNED + nhid), so none of them is programmed
+and traffic to them floods to every VTEP of the ES, which can duplicate
+it. zebra owns these entries (install, move, delete); the kernel should
+never age them. Set NUD_NOARP when a remote MAC references a nexthop
+group. Kernel readback of vxlan fdb entries does not look at NUD_NOARP,
+so this changes only what is installed.
+
+Interim local patch; to be replaced by the upstream FRR fix.
+
+Forwarded: not-yet
+Last-Update: 2026-11-15
+---
+diff --git a/zebra/rt_netlink.c b/zebra/rt_netlink.c
+index e883033..e5380c8 100644
+--- a/zebra/rt_netlink.c
++++ b/zebra/rt_netlink.c
+@@ -3728,6 +3728,15 @@ ssize_t netlink_macfdb_update_ctx(struct zebra_dplane_ctx *ctx, void *data,
+ 	}
+ 
+ 	nhg_id = dplane_ctx_mac_get_nhg_id(ctx);
++
++	/* The kernel rejects dynamic fdb entries that reference a nexthop
++	 * ("A nexthop fdb cannot be dynamic", CVE-2026-98023). Remote MACs
++	 * behind an ES are owned by zebra and must not be aged by the
++	 * kernel anyway, so install them as static.
++	 */
++	if ((update_flags & DPLANE_MAC_REMOTE) && nhg_id)
++		state |= NUD_NOARP;
++
+ 	vtep_ip.ipaddr_v4 = *(dplane_ctx_mac_get_vtep_ip(ctx));
+ 	SET_IPADDR_V4(&vtep_ip);
+ 
