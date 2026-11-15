@@ -2,7 +2,7 @@ name: Build noble frr packages
 
 on:
   push:
-    branches: [main]
+    branches: [noble-nexthop]
     tags: ['noble/*']
   workflow_dispatch:
 

@@ -29,7 +29,7 @@ for p in $(cat /work/patches/series); do
     echo "$p" >> debian/patches/series
 done
 
-dch -v "$VERSION" -D noble "Add $(paste -sd' ' /work/patches/series) (see https://github.com/bhouse-nexthop/frr-noble)."
+dch -v "$VERSION" -D noble "Add $(paste -sd' ' /work/patches/series) (see https://github.com/bhouse-nexthop/frr/tree/noble-nexthop)."
 
 mk-build-deps -i -r -t "apt-get -y -qq --no-install-recommends" debian/control >/dev/null
 rm -f frr-build-deps_*
