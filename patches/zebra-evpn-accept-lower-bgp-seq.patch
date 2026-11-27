@@ -18,6 +18,7 @@ Origin: upstream, https://github.com/FRRouting/frr/commit/7d99ad7f93e42ca2f58023
 Origin: upstream, https://github.com/FRRouting/frr/commit/1e1398e3daa4c63c18da8e1f49b3c20bac6a3490
 Origin: upstream, https://github.com/FRRouting/frr/commit/da823882a5fb2295efdfed3154fa6130e3227e58
 Bug: https://github.com/FRRouting/frr/issues/10468
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/frr/+bug/2178228
 Applied-Upstream: 8.5, https://github.com/FRRouting/frr/pull/12081
 Last-Update: 2026-11-27
 ---

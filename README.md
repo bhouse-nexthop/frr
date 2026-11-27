@@ -14,7 +14,8 @@ Everything else is Ubuntu's package, unchanged.
 
 zebra in FRR 8.4.4 ignores a remote MAC or neighbor update from bgpd when the update's
 MAC-mobility sequence number is lower than the one zebra already holds
-([FRRouting/frr#10468](https://github.com/FRRouting/frr/issues/10468)). After a VM moves,
+([FRRouting/frr#10468](https://github.com/FRRouting/frr/issues/10468),
+[LP: #2178228](https://bugs.launchpad.net/ubuntu/+source/frr/+bug/2178228)). After a VM moves,
 bgpd can correctly select a route with a lower sequence number than one zebra installed
 earlier. zebra then keeps forwarding to the old VTEP indefinitely, while
 `show bgp l2vpn evpn route` shows the right next hop:
@@ -44,6 +45,8 @@ re-advertising the MAC from the host that has it, one above the stale sequence n
 
     vtysh -c 'configure terminal' -c 'router bgp' \
           -c 'bgp local-mac vni <vni> mac <mac> seq <n>'
+
+Drop this build once Ubuntu ships the fix ([LP: #2178228](https://bugs.launchpad.net/ubuntu/+source/frr/+bug/2178228)).
 
 ## Rebasing on a newer Ubuntu update
 
