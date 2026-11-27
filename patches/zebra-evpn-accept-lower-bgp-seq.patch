@@ -1,0 +1,234 @@
+Description: zebra: accept a lower EVPN MAC/neigh sequence number from BGP
+ zebra keeps a remote MAC or neighbor whose MAC-mobility sequence number is
+ higher than the one in an update from bgpd, and ignores the update. After a
+ VM moves, bgpd can correctly select a route with a lower sequence number
+ than one zebra installed earlier, and zebra then keeps forwarding to the old
+ VTEP indefinitely, while BGP shows the right next hop.
+ .
+ These three upstream commits make zebra accept bgpd's sequence number for a
+ remote entry (a local entry that is ready for BGP still keeps the higher
+ one). The hidden "no evpn accept-bgp-seq" config command restores the old
+ behaviour at runtime.
+ .
+ Upstream shipped these with a bgpd rework of the EVPN VNI tables in the same
+ pull request; only the zebra commits are backported. That rework matters
+ when a moved MAC also has MAC+IP routes; here every moving MAC is MAC-only.
+Author: Stephen Worley <sworley@nvidia.com>
+Origin: upstream, https://github.com/FRRouting/frr/commit/7d99ad7f93e42ca2f58023374843d70039a8310f
+Origin: upstream, https://github.com/FRRouting/frr/commit/1e1398e3daa4c63c18da8e1f49b3c20bac6a3490
+Origin: upstream, https://github.com/FRRouting/frr/commit/da823882a5fb2295efdfed3154fa6130e3227e58
+Bug: https://github.com/FRRouting/frr/issues/10468
+Applied-Upstream: 8.5, https://github.com/FRRouting/frr/pull/12081
+Last-Update: 2026-11-27
+---
+diff --git a/zebra/zebra_evpn_mac.c b/zebra/zebra_evpn_mac.c
+index a3d2179..1f78933 100644
+--- a/zebra/zebra_evpn_mac.c
++++ b/zebra/zebra_evpn_mac.c
+@@ -1606,33 +1606,42 @@ static inline bool zebra_evpn_mac_is_bgp_seq_ok(struct zebra_evpn *zevpn,
+ 						bool sync)
+ {
+ 	char ipbuf[INET6_ADDRSTRLEN];
++	char mac_buf[MAC_BUF_SIZE];
+ 	uint32_t tmp_seq;
+ 	const char *n_type;
++	bool is_local = false;
+ 
+ 	if (CHECK_FLAG(mac->flags, ZEBRA_MAC_LOCAL)) {
+ 		tmp_seq = mac->loc_seq;
+ 		n_type = "local";
++		is_local = true;
+ 	} else {
+ 		tmp_seq = mac->rem_seq;
+ 		n_type = "remote";
+ 	}
+ 
+ 	if (seq < tmp_seq) {
++
++		if (is_local && !zebra_evpn_mac_is_ready_for_bgp(mac->flags)) {
++			if (IS_ZEBRA_DEBUG_EVPN_MH_MAC || IS_ZEBRA_DEBUG_VXLAN)
++				zlog_debug(
++					"%s-macip not ready vni %u %s-mac %pEA lower seq %u f 0x%x",
++					sync ? "sync" : "rem", zevpn->vni,
++					n_type, &mac->macaddr, tmp_seq,
++					mac->flags);
++			return true;
++		}
++
+ 		/* if the mac was never advertised to bgp we must accept
+ 		 * whatever sequence number bgp sends
+-		 * XXX - check with Vivek
+ 		 */
+-		if (CHECK_FLAG(mac->flags, ZEBRA_MAC_LOCAL)
+-		    && !zebra_evpn_mac_is_ready_for_bgp(mac->flags)) {
+-			if (IS_ZEBRA_DEBUG_EVPN_MH_MAC
+-			    || IS_ZEBRA_DEBUG_VXLAN) {
+-				char mac_buf[MAC_BUF_SIZE];
+-
++		if (!is_local && zebra_vxlan_get_accept_bgp_seq()) {
++			if (IS_ZEBRA_DEBUG_EVPN_MH_MAC ||
++			    IS_ZEBRA_DEBUG_VXLAN) {
+ 				zlog_debug(
+ 					"%s-macip accept vni %u %s-mac %pEA%s%s lower seq %u f %s",
+ 					sync ? "sync" : "rem", zevpn->vni,
+-					n_type,
+-					&mac->macaddr,
++					n_type, &mac->macaddr,
+ 					ipa_len ? " IP " : "",
+ 					ipa_len ? ipaddr2str(ipaddr, ipbuf,
+ 							     sizeof(ipbuf))
+@@ -1646,8 +1655,6 @@ static inline bool zebra_evpn_mac_is_bgp_seq_ok(struct zebra_evpn *zevpn,
+ 		}
+ 
+ 		if (IS_ZEBRA_DEBUG_EVPN_MH_MAC || IS_ZEBRA_DEBUG_VXLAN) {
+-			char mac_buf[MAC_BUF_SIZE];
+-
+ 			zlog_debug(
+ 				"%s-macip ignore vni %u %s-mac %pEA%s%s as existing has higher seq %u f %s",
+ 				sync ? "sync" : "rem", zevpn->vni, n_type,
+@@ -1660,6 +1667,7 @@ static inline bool zebra_evpn_mac_is_bgp_seq_ok(struct zebra_evpn *zevpn,
+ 				zebra_evpn_zebra_mac_flag_dump(
+ 					mac, mac_buf, sizeof(mac_buf)));
+ 		}
++
+ 		return false;
+ 	}
+ 
+diff --git a/zebra/zebra_evpn_neigh.c b/zebra/zebra_evpn_neigh.c
+index 6d90a60..322ccac 100644
+--- a/zebra/zebra_evpn_neigh.c
++++ b/zebra/zebra_evpn_neigh.c
+@@ -501,22 +501,33 @@ bool zebra_evpn_neigh_is_bgp_seq_ok(struct zebra_evpn *zevpn,
+ {
+ 	uint32_t tmp_seq;
+ 	const char *n_type;
++	bool is_local = false;
+ 
+ 	if (CHECK_FLAG(n->flags, ZEBRA_NEIGH_LOCAL)) {
+ 		tmp_seq = n->loc_seq;
+ 		n_type = "local";
++		is_local = true;
+ 	} else {
+ 		tmp_seq = n->rem_seq;
+ 		n_type = "remote";
+ 	}
+ 
+ 	if (seq < tmp_seq) {
++		if (is_local && !zebra_evpn_neigh_is_ready_for_bgp(n)) {
++			if (IS_ZEBRA_DEBUG_EVPN_MH_NEIGH ||
++			    IS_ZEBRA_DEBUG_VXLAN)
++				zlog_debug(
++					"%s-macip not ready vni %u %s mac %pEA IP %pIA lower seq %u f 0x%x",
++					sync ? "sync" : "remote", zevpn->vni,
++					n_type, macaddr, &n->ip, tmp_seq,
++					n->flags);
++			return true;
++		}
++
+ 		/* if the neigh was never advertised to bgp we must accept
+ 		 * whatever sequence number bgp sends
+-		 * XXX - check with Vivek
+ 		 */
+-		if (CHECK_FLAG(n->flags, ZEBRA_NEIGH_LOCAL)
+-		    && !zebra_evpn_neigh_is_ready_for_bgp(n)) {
++		if (!is_local && zebra_vxlan_get_accept_bgp_seq()) {
+ 			if (IS_ZEBRA_DEBUG_EVPN_MH_NEIGH
+ 			    || IS_ZEBRA_DEBUG_VXLAN)
+ 				zlog_debug(
+diff --git a/zebra/zebra_vty.c b/zebra/zebra_vty.c
+index 525e036..77922d2 100644
+--- a/zebra/zebra_vty.c
++++ b/zebra/zebra_vty.c
+@@ -3740,6 +3740,27 @@ DEFPY (clear_evpn_dup_addr,
+ 	return ret;
+ }
+ 
++DEFPY_HIDDEN (evpn_accept_bgp_seq,
++              evpn_accept_bgp_seq_cmd,
++              "evpn accept-bgp-seq",
++              "EVPN\n"
++	      "Accept all sequence numbers from BGP\n")
++{
++	zebra_vxlan_set_accept_bgp_seq(true);
++	return CMD_SUCCESS;
++}
++
++DEFPY_HIDDEN (no_evpn_accept_bgp_seq,
++              no_evpn_accept_bgp_seq_cmd,
++              "no evpn accept-bgp-seq",
++              NO_STR
++              "EVPN\n"
++	      "Accept all sequence numbers from BGP\n")
++{
++	zebra_vxlan_set_accept_bgp_seq(false);
++	return CMD_SUCCESS;
++}
++
+ /* Static ip route configuration write function. */
+ static int zebra_ip_config(struct vty *vty)
+ {
+@@ -3945,6 +3966,9 @@ static int config_write_protocol(struct vty *vty)
+ 
+ 	zebra_pbr_config_write(vty);
+ 
++	if (!zebra_vxlan_get_accept_bgp_seq())
++		vty_out(vty, "no evpn accept-bgp-seq\n");
++
+ 	/* Include nexthop-group config */
+ 	if (!zebra_nhg_kernel_nexthops_enabled())
+ 		vty_out(vty, "no zebra nexthop kernel enable\n");
+@@ -4582,6 +4606,8 @@ void zebra_vty_init(void)
+ 	install_element(VIEW_NODE, &show_evpn_neigh_vni_dad_cmd);
+ 	install_element(VIEW_NODE, &show_evpn_neigh_vni_all_dad_cmd);
+ 	install_element(ENABLE_NODE, &clear_evpn_dup_addr_cmd);
++	install_element(CONFIG_NODE, &evpn_accept_bgp_seq_cmd);
++	install_element(CONFIG_NODE, &no_evpn_accept_bgp_seq_cmd);
+ 
+ 	install_element(VIEW_NODE, &show_neigh_cmd);
+ 
+diff --git a/zebra/zebra_vxlan.c b/zebra/zebra_vxlan.c
+index 34cce71..f1c7deb 100644
+--- a/zebra/zebra_vxlan.c
++++ b/zebra/zebra_vxlan.c
+@@ -69,6 +69,9 @@ DEFINE_HOOK(zebra_rmac_update,
+ 	     const char *reason),
+ 	    (rmac, zl3vni, delete, reason));
+ 
++/* config knobs */
++static bool accept_bgp_seq = true;
++
+ /* static function declarations */
+ static void zevpn_print_neigh_hash_all_evpn(struct hash_bucket *bucket,
+ 					    void **args);
+@@ -6284,6 +6287,17 @@ extern void zebra_vxlan_handle_result(struct zebra_dplane_ctx *ctx)
+ 	return;
+ }
+ 
++/* Config knob for accepting lower sequence numbers */
++void zebra_vxlan_set_accept_bgp_seq(bool set)
++{
++	accept_bgp_seq = set;
++}
++
++bool zebra_vxlan_get_accept_bgp_seq(void)
++{
++	return accept_bgp_seq;
++}
++
+ /* Cleanup BGP EVPN configuration upon client disconnect */
+ extern void zebra_evpn_init(void)
+ {
+diff --git a/zebra/zebra_vxlan.h b/zebra/zebra_vxlan.h
+index 757c65d..121e563 100644
+--- a/zebra/zebra_vxlan.h
++++ b/zebra/zebra_vxlan.h
+@@ -225,6 +225,9 @@ extern int zebra_vxlan_dp_network_mac_del(struct interface *ifp,
+ 					  struct ethaddr *macaddr,
+ 					  vlanid_t vid);
+ 
++extern void zebra_vxlan_set_accept_bgp_seq(bool set);
++extern bool zebra_vxlan_get_accept_bgp_seq(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
